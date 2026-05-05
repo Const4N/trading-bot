@@ -34,6 +34,7 @@ def binance_get(path, params=None, signed=False):
     if signed:
         offset = get_server_time_offset()
         params["timestamp"] = int(time.time() * 1000) + offset
+        params["recvWindow"] = 10000
         params["signature"] = sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.get(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
@@ -43,6 +44,7 @@ def binance_get(path, params=None, signed=False):
 def binance_post(path, params):
     offset = get_server_time_offset()
     params["timestamp"] = int(time.time() * 1000) + offset
+    params["recvWindow"] = 10000
     params["signature"] = sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.post(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
