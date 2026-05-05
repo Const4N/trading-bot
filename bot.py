@@ -14,7 +14,7 @@ SYMBOL       = "BTCUSDT"
 TRADE_USDT   = float(os.environ.get("TRADE_AMOUNT_USDT", "50"))  # cuánto arriesgar por trade
 INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "60"))     # cada cuántos minutos analiza
 
-BINANCE_BASE = "https://api.binance.com"
+BINANCE_BASE = "https://api1.binance.com"  # fallback endpoint, evita bloqueos geo
 
 # ── Binance helpers ────────────────────────────────────────────
 def sign(params: dict) -> str:
@@ -187,7 +187,7 @@ def run_cycle():
         log(f"Sin acción (HOLD o confianza baja)")
 
 def main():
-    log("🤖 Bot iniciado | Par: BTCUSDT | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDT}")
+    log(f"🤖 Bot iniciado | Par: BTCUSDT | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDT}")
     while True:
         try:
             run_cycle()
