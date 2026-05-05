@@ -10,7 +10,7 @@ BINANCE_API_KEY    = os.environ["BINANCE_API_KEY"]
 BINANCE_API_SECRET = os.environ["BINANCE_API_SECRET"]
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 
-SYMBOL       = "BTCUSDT"
+SYMBOL       = "SOLUSDC"
 TRADE_USDT   = float(os.environ.get("TRADE_AMOUNT_USDT", "50"))
 INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "60"))
 
@@ -62,7 +62,7 @@ def get_klines(limit=50):
 def get_balances():
     data = binance_get("/api/v3/account", signed=True)
     balances = {b["asset"]: float(b["free"]) for b in data["balances"]}
-    return balances.get("USDT", 0.0), balances.get("BTC", 0.0)
+    return balances.get("USDC", 0.0), balances.get("SOL", 0.0)
 
 def place_order(side, usdt_amount=None, btc_amount=None):
     info = binance_get("/api/v3/exchangeInfo", {"symbol": SYMBOL})
@@ -119,7 +119,7 @@ def calc_ema(closes, period):
 
 # ── Claude ─────────────────────────────────────────────────────
 def ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes, usdt_balance, btc_balance):
-    prompt = f"""Eres un trader experto en criptomonedas. Analiza BTC/USDT y decide.
+    prompt = f"""Eres un trader experto en criptomonedas. Analiza SOL/USDC y decide.
 
 MERCADO:
 - Precio: ${price:.2f}
@@ -131,8 +131,8 @@ MERCADO:
 - Últimos 5 cierres: {[f'${c:.0f}' for c in closes[-5:]]}
 
 CARTERA:
-- USDT libre: ${usdt_balance:.2f}
-- BTC libre: {btc_balance:.6f}
+- USDC libre: ${usdt_balance:.2f}
+- SOL libre: {btc_balance:.4f}
 
 Responde SOLO con JSON, sin markdown:
 {{"signal":"BUY|SELL|HOLD","confidence":0-100,"reasoning":"máx 100 chars en español"}}"""
@@ -169,7 +169,7 @@ def run_cycle():
     ema21 = calc_ema(closes, 21)
     usdt_bal, btc_bal = get_balances()
 
-    log(f"BTC: ${price:.2f} | RSI: {f'{rsi:.1f}' if rsi else '—'} | USDT: ${usdt_bal:.2f} | BTC: {btc_bal:.6f}")
+    log(f"SOL: ${price:.2f} | RSI: {f'{rsi:.1f}' if rsi else '—'} | USDT: ${usdt_bal:.2f} | BTC: {sol_bal:.4f}")
     log("Consultando a Claude...")
 
     result     = ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes, usdt_bal, btc_bal)
@@ -186,8 +186,8 @@ def run_cycle():
         else:
             log(f"⚠️  Saldo insuficiente (${usdt_bal:.2f} USDT disponibles, necesitas ${TRADE_USDT})")
     elif signal == "SELL" and confidence >= 65:
-        if btc_bal > 0.00001:
-            log(f"Ejecutando VENTA de {btc_bal:.6f} BTC...")
+        if btc_bal > 0.001:
+            log(f"Ejecutando VENTA de {sol_bal:.4f} BTC...")
             place_order("SELL", btc_amount=btc_bal)
         else:
             log("⚠️  Sin BTC que vender")
@@ -195,7 +195,7 @@ def run_cycle():
         log("Sin acción (HOLD o confianza baja)")
 
 def main():
-    log(f"🤖 Bot iniciado | Par: BTCUSDT | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDT}")
+    log(f"🤖 Bot iniciado | Par: SOLUSDC | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDT}")
     while True:
         try:
             run_cycle()
