@@ -11,8 +11,8 @@ BINANCE_API_SECRET = os.environ["BINANCE_API_SECRET"]
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 
 SYMBOL       = "SOLUSDC"
-TRADE_USDT   = float(os.environ.get("TRADE_AMOUNT_USDT", "50"))
-INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "60"))
+TRADE_USDC   = float(os.environ.get("TRADE_AMOUNT_USDT", "15"))
+INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "15"))
 
 BINANCE_BASE = "https://api1.binance.com"
 
@@ -20,8 +20,7 @@ BINANCE_BASE = "https://api1.binance.com"
 def get_server_time_offset():
     try:
         r = requests.get(BINANCE_BASE + "/api/v3/time", timeout=5)
-        server_time = r.json()["serverTime"]
-        return server_time - int(time.time() * 1000)
+        return r.json()["serverTime"] - int(time.time() * 1000)
     except:
         return 0
 
@@ -59,39 +58,43 @@ def get_klines(limit=50):
     data = binance_get("/api/v3/klines", {"symbol": SYMBOL, "interval": "1h", "limit": limit})
     return [float(k[4]) for k in data]
 
-def get_balances():
-    data = binance_get("/api/v3/account", signed=True)
-    balances = {b["asset"]: float(b["free"]) for b in data["balances"]}
-    return balances.get("USDC", 0.0), balances.get("SOL", 0.0)
+def get_open_orders():
+    """Comprueba si hay órdenes abiertas para saber si tenemos SOL comprado"""
+    try:
+        data = binance_get("/api/v3/openOrders", {"symbol": SYMBOL}, signed=True)
+        return data
+    except Exception as e:
+        log(f"⚠️ No se pudieron obtener órdenes: {e}")
+        return []
 
-def place_order(side, usdt_amount=None, btc_amount=None):
+def place_order(side, usdc_amount=None, sol_amount=None):
     info = binance_get("/api/v3/exchangeInfo", {"symbol": SYMBOL})
     filters = {f["filterType"]: f for f in info["symbols"][0]["filters"]}
     step = float(filters["LOT_SIZE"]["stepSize"])
     min_qty = float(filters["LOT_SIZE"]["minQty"])
-    min_notional = float(filters.get("MIN_NOTIONAL", {}).get("minNotional", 10))
 
     price, _, _ = get_price()
 
     if side == "BUY":
-        qty = usdt_amount / price
+        qty = usdc_amount / price
     else:
-        qty = btc_amount
+        qty = sol_amount
 
-    decimals = len(str(step).rstrip("0").split(".")[-1])
+    decimals = len(str(step).rstrip("0").split(".")[-1]) if "." in str(step) else 0
     qty = round(qty - (qty % step), decimals)
 
-    if qty < min_qty or qty * price < min_notional:
-        log(f"⚠️  Cantidad demasiado pequeña ({qty} BTC). Aumenta TRADE_AMOUNT_USDT.")
+    if qty < min_qty:
+        log(f"⚠️ Cantidad demasiado pequeña ({qty} SOL).")
         return None
 
+    log(f"Enviando orden {side} {qty} SOL a ~${price:.2f}...")
     order = binance_post("/api/v3/order", {
         "symbol": SYMBOL,
         "side": side,
         "type": "MARKET",
         "quantity": qty,
     })
-    log(f"✅ Orden ejecutada: {side} {qty} BTC a ~${price:.0f}")
+    log(f"✅ Orden ejecutada: {side} {qty} SOL a ~${price:.2f}")
     return order
 
 # ── Indicadores ────────────────────────────────────────────────
@@ -101,10 +104,8 @@ def calc_rsi(closes, period=14):
     gains = losses = 0
     for i in range(len(closes) - period, len(closes)):
         diff = closes[i] - closes[i - 1]
-        if diff > 0:
-            gains += diff
-        else:
-            losses -= diff
+        if diff > 0: gains += diff
+        else: losses -= diff
     rs = (gains / period) / (losses / period + 1e-9)
     return 100 - 100 / (1 + rs)
 
@@ -118,23 +119,19 @@ def calc_ema(closes, period):
     return ema
 
 # ── Claude ─────────────────────────────────────────────────────
-def ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes, usdt_balance, btc_balance):
+def ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes):
     prompt = f"""Eres un trader experto en criptomonedas. Analiza SOL/USDC y decide.
 
 MERCADO:
-- Precio: ${price:.2f}
+- Precio SOL: ${price:.2f}
 - Cambio 24h: {change24h:.2f}%
 - Volumen 24h: ${volume24h/1e6:.1f}M
 - RSI(14): {f'{rsi:.1f}' if rsi else 'N/A'}
 - EMA9: ${f'{ema9:.2f}' if ema9 else 'N/A'}
 - EMA21: ${f'{ema21:.2f}' if ema21 else 'N/A'}
-- Últimos 5 cierres: {[f'${c:.0f}' for c in closes[-5:]]}
+- Últimos 5 cierres: {[f'${c:.2f}' for c in closes[-5:]]}
 
-CARTERA:
-- USDC libre: ${usdt_balance:.2f}
-- SOL libre: {btc_balance:.4f}
-
-Responde SOLO con JSON, sin markdown:
+Responde SOLO con JSON sin markdown:
 {{"signal":"BUY|SELL|HOLD","confidence":0-100,"reasoning":"máx 100 chars en español"}}"""
 
     headers = {
@@ -153,6 +150,9 @@ Responde SOLO con JSON, sin markdown:
     text = r.json()["content"][0]["text"].strip()
     return json.loads(text)
 
+# ── Estado local ───────────────────────────────────────────────
+state = {"holding_sol": False, "sol_amount": 0.0}
+
 # ── Log ────────────────────────────────────────────────────────
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -167,35 +167,39 @@ def run_cycle():
     rsi   = calc_rsi(closes)
     ema9  = calc_ema(closes, 9)
     ema21 = calc_ema(closes, 21)
-    usdt_bal, btc_bal = get_balances()
 
-    log(f"SOL: ${price:.2f} | RSI: {f'{rsi:.1f}' if rsi else '—'} | USDT: ${usdt_bal:.2f} | BTC: {sol_bal:.4f}")
+    log(f"SOL: ${price:.2f} | RSI: {f'{rsi:.1f}' if rsi else '—'} | Holding SOL: {state['holding_sol']}")
     log("Consultando a Claude...")
 
-    result     = ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes, usdt_bal, btc_bal)
+    result     = ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes)
     signal     = result["signal"]
     confidence = result["confidence"]
     reason     = result["reasoning"]
 
     log(f"Claude → {signal} ({confidence}%) | {reason}")
 
-    if signal == "BUY" and confidence >= 65:
-        if usdt_bal >= TRADE_USDT:
-            log(f"Ejecutando COMPRA de ${TRADE_USDT} en BTC...")
-            place_order("BUY", usdt_amount=TRADE_USDT)
-        else:
-            log(f"⚠️  Saldo insuficiente (${usdt_bal:.2f} USDT disponibles, necesitas ${TRADE_USDT})")
-    elif signal == "SELL" and confidence >= 65:
-        if btc_bal > 0.001:
-            log(f"Ejecutando VENTA de {sol_bal:.4f} BTC...")
-            place_order("SELL", btc_amount=btc_bal)
-        else:
-            log("⚠️  Sin BTC que vender")
+    if signal == "BUY" and confidence >= 65 and not state["holding_sol"]:
+        log(f"Ejecutando COMPRA de ${TRADE_USDC} USDC en SOL...")
+        order = place_order("BUY", usdc_amount=TRADE_USDC)
+        if order:
+            sol_qty = float(order.get("executedQty", TRADE_USDC / price))
+            state["holding_sol"] = True
+            state["sol_amount"] = sol_qty
+            log(f"✅ Compramos {sol_qty:.4f} SOL")
+
+    elif signal == "SELL" and confidence >= 65 and state["holding_sol"]:
+        log(f"Ejecutando VENTA de {state['sol_amount']:.4f} SOL...")
+        order = place_order("SELL", sol_amount=state["sol_amount"])
+        if order:
+            state["holding_sol"] = False
+            state["sol_amount"] = 0.0
+            log(f"✅ SOL vendido")
+
     else:
-        log("Sin acción (HOLD o confianza baja)")
+        log(f"Sin acción (HOLD o confianza baja)")
 
 def main():
-    log(f"🤖 Bot iniciado | Par: SOLUSDC | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDT}")
+    log(f"🤖 Bot iniciado | Par: SOLUSDC | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDC}")
     while True:
         try:
             run_cycle()
