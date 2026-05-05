@@ -11,12 +11,20 @@ BINANCE_API_SECRET = os.environ["BINANCE_API_SECRET"]
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 
 SYMBOL       = "BTCUSDT"
-TRADE_USDT   = float(os.environ.get("TRADE_AMOUNT_USDT", "50"))  # cuánto arriesgar por trade
-INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "60"))     # cada cuántos minutos analiza
+TRADE_USDT   = float(os.environ.get("TRADE_AMOUNT_USDT", "50"))
+INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "60"))
 
-BINANCE_BASE = "https://api1.binance.com"  # fallback endpoint, evita bloqueos geo
+BINANCE_BASE = "https://api1.binance.com"
 
 # ── Binance helpers ────────────────────────────────────────────
+def get_server_time_offset():
+    try:
+        r = requests.get(BINANCE_BASE + "/api/v3/time", timeout=5)
+        server_time = r.json()["serverTime"]
+        return server_time - int(time.time() * 1000)
+    except:
+        return 0
+
 def sign(params: dict) -> str:
     query = "&".join(f"{k}={v}" for k, v in params.items())
     return hmac.new(BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
@@ -24,7 +32,8 @@ def sign(params: dict) -> str:
 def binance_get(path, params=None, signed=False):
     params = params or {}
     if signed:
-        params["timestamp"] = int(time.time() * 1000)
+        offset = get_server_time_offset()
+        params["timestamp"] = int(time.time() * 1000) + offset
         params["signature"] = sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.get(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
@@ -32,7 +41,8 @@ def binance_get(path, params=None, signed=False):
     return r.json()
 
 def binance_post(path, params):
-    params["timestamp"] = int(time.time() * 1000)
+    offset = get_server_time_offset()
+    params["timestamp"] = int(time.time() * 1000) + offset
     params["signature"] = sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.post(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
@@ -45,7 +55,7 @@ def get_price():
 
 def get_klines(limit=50):
     data = binance_get("/api/v3/klines", {"symbol": SYMBOL, "interval": "1h", "limit": limit})
-    return [float(k[4]) for k in data]  # cierre
+    return [float(k[4]) for k in data]
 
 def get_balances():
     data = binance_get("/api/v3/account", signed=True)
@@ -53,7 +63,6 @@ def get_balances():
     return balances.get("USDT", 0.0), balances.get("BTC", 0.0)
 
 def place_order(side, usdt_amount=None, btc_amount=None):
-    """side: BUY o SELL"""
     info = binance_get("/api/v3/exchangeInfo", {"symbol": SYMBOL})
     filters = {f["filterType"]: f for f in info["symbols"][0]["filters"]}
     step = float(filters["LOT_SIZE"]["stepSize"])
@@ -67,7 +76,6 @@ def place_order(side, usdt_amount=None, btc_amount=None):
     else:
         qty = btc_amount
 
-    # redondear al stepSize
     decimals = len(str(step).rstrip("0").split(".")[-1])
     qty = round(qty - (qty % step), decimals)
 
@@ -115,9 +123,9 @@ MERCADO:
 - Precio: ${price:.2f}
 - Cambio 24h: {change24h:.2f}%
 - Volumen 24h: ${volume24h/1e6:.1f}M
-- RSI(14): {rsi:.1f if rsi else 'N/A'}
-- EMA9: ${ema9:.2f if ema9 else 'N/A'}
-- EMA21: ${ema21:.2f if ema21 else 'N/A'}
+- RSI(14): {f'{rsi:.1f}' if rsi else 'N/A'}
+- EMA9: ${f'{ema9:.2f}' if ema9 else 'N/A'}
+- EMA21: ${f'{ema21:.2f}' if ema21 else 'N/A'}
 - Últimos 5 cierres: {[f'${c:.0f}' for c in closes[-5:]]}
 
 CARTERA:
@@ -154,15 +162,15 @@ def run_cycle():
 
     closes = get_klines()
     price, change24h, volume24h = get_price()
-    rsi  = calc_rsi(closes)
-    ema9 = calc_ema(closes, 9)
+    rsi   = calc_rsi(closes)
+    ema9  = calc_ema(closes, 9)
     ema21 = calc_ema(closes, 21)
     usdt_bal, btc_bal = get_balances()
 
-    log(f"BTC: ${price:.2f} | RSI: {rsi:.1f if rsi else '—'} | USDT: ${usdt_bal:.2f} | BTC: {btc_bal:.6f}")
+    log(f"BTC: ${price:.2f} | RSI: {f'{rsi:.1f}' if rsi else '—'} | USDT: ${usdt_bal:.2f} | BTC: {btc_bal:.6f}")
     log("Consultando a Claude...")
 
-    result = ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes, usdt_bal, btc_bal)
+    result     = ask_claude(price, change24h, volume24h, rsi, ema9, ema21, closes, usdt_bal, btc_bal)
     signal     = result["signal"]
     confidence = result["confidence"]
     reason     = result["reasoning"]
@@ -175,16 +183,14 @@ def run_cycle():
             place_order("BUY", usdt_amount=TRADE_USDT)
         else:
             log(f"⚠️  Saldo insuficiente (${usdt_bal:.2f} USDT disponibles, necesitas ${TRADE_USDT})")
-
     elif signal == "SELL" and confidence >= 65:
         if btc_bal > 0.00001:
             log(f"Ejecutando VENTA de {btc_bal:.6f} BTC...")
             place_order("SELL", btc_amount=btc_bal)
         else:
             log("⚠️  Sin BTC que vender")
-
     else:
-        log(f"Sin acción (HOLD o confianza baja)")
+        log("Sin acción (HOLD o confianza baja)")
 
 def main():
     log(f"🤖 Bot iniciado | Par: BTCUSDT | Intervalo: {INTERVAL_MIN} min | Trade: ${TRADE_USDT}")
