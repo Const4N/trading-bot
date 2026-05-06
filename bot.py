@@ -47,6 +47,8 @@ def binance_post(path, params):
     params["signature"] = sign(params)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.post(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
+    if not r.ok:
+        print(f"[Binance error] {r.status_code}: {r.text}", flush=True)
     r.raise_for_status()
     return r.json()
 
@@ -72,7 +74,6 @@ def place_order(side, usdc_amount=None, sol_amount=None):
     step = float(filters["LOT_SIZE"]["stepSize"])
     min_qty = float(filters["LOT_SIZE"]["minQty"])
 
-    # Soporte para filtros MIN_NOTIONAL y NOTIONAL (Binance usa ambos según el par)
     min_notional = 0.0
     if "MIN_NOTIONAL" in filters:
         min_notional = float(filters["MIN_NOTIONAL"].get("minNotional", 0))
@@ -89,7 +90,6 @@ def place_order(side, usdc_amount=None, sol_amount=None):
     decimals = len(str(step).rstrip("0").split(".")[-1]) if "." in str(step) else 0
     qty = round(qty - (qty % step), decimals)
 
-    # Si después de redondear queda por debajo del mínimo notional, sumar un step
     if min_notional > 0 and qty * price < min_notional:
         qty = round(qty + step, decimals)
 
