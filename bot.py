@@ -11,7 +11,7 @@ BINANCE_API_SECRET = os.environ["BINANCE_API_SECRET"]
 ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
 
 SYMBOL       = "SOLUSDC"
-TRADE_USDC   = float(os.environ.get("TRADE_AMOUNT_USDT", "15"))
+TRADE_USDC   = float(os.environ.get("TRADE_AMOUNT_USDT", "17"))
 INTERVAL_MIN = int(os.environ.get("INTERVAL_MINUTES", "15"))
 
 BINANCE_BASE = "https://api1.binance.com"
@@ -59,7 +59,6 @@ def get_klines(limit=50):
     return [float(k[4]) for k in data]
 
 def get_open_orders():
-    """Comprueba si hay órdenes abiertas para saber si tenemos SOL comprado"""
     try:
         data = binance_get("/api/v3/openOrders", {"symbol": SYMBOL}, signed=True)
         return data
@@ -73,6 +72,13 @@ def place_order(side, usdc_amount=None, sol_amount=None):
     step = float(filters["LOT_SIZE"]["stepSize"])
     min_qty = float(filters["LOT_SIZE"]["minQty"])
 
+    # Soporte para filtros MIN_NOTIONAL y NOTIONAL (Binance usa ambos según el par)
+    min_notional = 0.0
+    if "MIN_NOTIONAL" in filters:
+        min_notional = float(filters["MIN_NOTIONAL"].get("minNotional", 0))
+    elif "NOTIONAL" in filters:
+        min_notional = float(filters["NOTIONAL"].get("minNotional", 0))
+
     price, _, _ = get_price()
 
     if side == "BUY":
@@ -83,8 +89,16 @@ def place_order(side, usdc_amount=None, sol_amount=None):
     decimals = len(str(step).rstrip("0").split(".")[-1]) if "." in str(step) else 0
     qty = round(qty - (qty % step), decimals)
 
+    # Si después de redondear queda por debajo del mínimo notional, sumar un step
+    if min_notional > 0 and qty * price < min_notional:
+        qty = round(qty + step, decimals)
+
     if qty < min_qty:
         log(f"⚠️ Cantidad demasiado pequeña ({qty} SOL).")
+        return None
+
+    if min_notional > 0 and qty * price < min_notional:
+        log(f"⚠️ Notional insuficiente ({qty * price:.2f} USDC < {min_notional} mínimo).")
         return None
 
     log(f"Enviando orden {side} {qty} SOL a ~${price:.2f}...")
