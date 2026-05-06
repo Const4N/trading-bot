@@ -3,6 +3,7 @@ import time
 import hmac
 import hashlib
 import requests
+import urllib.parse
 from datetime import datetime
 
 # ── Configuración ──────────────────────────────────────────────
@@ -24,9 +25,8 @@ def get_server_time_offset():
     except:
         return 0
 
-def sign(params: dict) -> str:
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return hmac.new(BINANCE_API_SECRET.encode(), query.encode(), hashlib.sha256).hexdigest()
+def sign(query_string: str) -> str:
+    return hmac.new(BINANCE_API_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
 
 def binance_get(path, params=None, signed=False):
     params = params or {}
@@ -34,7 +34,8 @@ def binance_get(path, params=None, signed=False):
         offset = get_server_time_offset()
         params["timestamp"] = int(time.time() * 1000) + offset
         params["recvWindow"] = 10000
-        params["signature"] = sign(params)
+        query_string = urllib.parse.urlencode(params)
+        params["signature"] = sign(query_string)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.get(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
     r.raise_for_status()
@@ -44,7 +45,8 @@ def binance_post(path, params):
     offset = get_server_time_offset()
     params["timestamp"] = int(time.time() * 1000) + offset
     params["recvWindow"] = 10000
-    params["signature"] = sign(params)
+    query_string = urllib.parse.urlencode(params)
+    params["signature"] = sign(query_string)
     headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     r = requests.post(BINANCE_BASE + path, params=params, headers=headers, timeout=10)
     if not r.ok:
